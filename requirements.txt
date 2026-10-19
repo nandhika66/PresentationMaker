@@ -1,0 +1,12 @@
+# No PyTorch needed - MiniLM runs on onnxruntime.
+#   pip install -r requirements.txt
+
+python-pptx>=1.0.2
+numpy>=1.26
+rank-bm25>=0.2.2
+onnxruntime>=1.18
+tokenizers>=0.19
+huggingface-hub>=0.23
+tqdm>=4.66
+google-genai>=1.40
+python-dotenv>=1.0
