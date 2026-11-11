@@ -1,6 +1,6 @@
-# STEP 3 - Hybrid search: custom keyword + BM25 + MiniLM, combined with
-# Reciprocal Rank Fusion (RRF).
-# Run directly for an interactive search, or import hybrid_search().
+# hybrid_search.py
+# Selected retrieval method:
+# BM25 + MiniLM Semantic Search + Reciprocal Rank Fusion
 
 import json
 import re
@@ -9,112 +9,101 @@ import numpy as np
 from rank_bm25 import BM25Okapi
 
 from config import EMBEDDINGS_FILE, RECORDS_FILE
+from embedder import MiniLMEmbedder
 
 
-TOP_K = 5
+# ---------------------------------------------------------
+# CONFIGURATION
+# ---------------------------------------------------------
+
 RRF_K = 60
 
-KEYWORD_WEIGHT = 2
 BM25_WEIGHT = 1
 SEMANTIC_WEIGHT = 1
 
+DEFAULT_TOP_K = 5
 
-# ---------- Load the knowledge base ----------
+
+# ---------------------------------------------------------
+# LOAD KNOWLEDGE BASE
+# ---------------------------------------------------------
 
 if not RECORDS_FILE.exists():
     raise FileNotFoundError(
-        f"{RECORDS_FILE.name} not found. Run: python read_ppt.py"
+        f"{RECORDS_FILE} not found. Run: python read_ppt.py"
     )
 
-with open(RECORDS_FILE, "r", encoding="utf-8") as file:
+with RECORDS_FILE.open("r", encoding="utf-8") as file:
     slides = json.load(file)
 
+if not slides:
+    raise ValueError("No slide records found.")
 
-def load_semantic_search():
-    """Load embeddings + MiniLM. Returns (None, None) if unavailable,
-    so the search still works with keyword + BM25 only."""
+if not EMBEDDINGS_FILE.exists():
+    raise FileNotFoundError(
+        f"{EMBEDDINGS_FILE} not found. "
+        "Run your MiniLM embedding-generation script first."
+    )
 
-    if not EMBEDDINGS_FILE.exists():
-        print("WARNING: slide_embeddings.npy not found -> run: python build_embeddings.py")
-        return None, None
+embeddings = np.load(EMBEDDINGS_FILE)
 
-    vectors = np.load(EMBEDDINGS_FILE)
-    if vectors.shape[0] != len(slides):
-        print(
-            f"WARNING: {len(slides)} slides but {vectors.shape[0]} embeddings "
-            "-> run: python build_embeddings.py"
-        )
-        return None, None
+if embeddings.shape[0] != len(slides):
+    raise ValueError(
+        "Slide and embedding counts do not match. "
+        f"Slides: {len(slides)}, embeddings: {embeddings.shape[0]}"
+    )
 
-    try:
-        from embedder import MiniLMEmbedder
-        return vectors, MiniLMEmbedder()
-    except Exception as error:
-        print(f"WARNING: MiniLM could not be loaded ({type(error).__name__}: {error})")
-        return None, None
+print(f"Loaded {len(slides)} slides.")
+print(f"MiniLM embedding shape: {embeddings.shape}")
 
 
-embeddings, model = load_semantic_search()
+# ---------------------------------------------------------
+# LOAD MINILM MODEL
+# ---------------------------------------------------------
 
-if model is None:
-    print("Semantic search is OFF - using keyword + BM25 only.\n")
-else:
-    print(f"Knowledge base: {len(slides)} slides, embeddings {embeddings.shape}")
+model = MiniLMEmbedder()
 
 
-# ---------- Tokenization ----------
+# ---------------------------------------------------------
+# TOKENIZATION
+# ---------------------------------------------------------
 
 def tokenize_text(text):
-    """Convert text into lowercase word tokens."""
-    return re.findall(r"\b[a-z0-9]+\b", text.lower())
+    """Convert text into lowercase alphanumeric tokens."""
+    return re.findall(r"\b[a-z0-9]+\b", str(text).lower())
 
 
-def tokenize(text):
-    """Return unique words for keyword matching."""
-    return set(tokenize_text(text))
+# ---------------------------------------------------------
+# BUILD BM25 INDEX
+# ---------------------------------------------------------
 
+slide_tokens = []
 
-# ---------- Build BM25 index once ----------
+for slide in slides:
+    searchable_text = " ".join([
+        str(slide.get("presentation_title", "") or ""),
+        str(slide.get("slide_title", "") or ""),
+        str(slide.get("search_text", "") or ""),
+    ])
 
-slide_tokens = [
-    tokenize_text(" ".join([
-        slide.get("presentation_title", ""),
-        slide.get("slide_title", ""),
-        slide.get("search_text", ""),
-    ]))
-    for slide in slides
-]
+    slide_tokens.append(tokenize_text(searchable_text))
 
 bm25 = BM25Okapi(slide_tokens)
 
 
-# ---------- Keyword search (3 x title matches + content matches) ----------
-
-def keyword_search(query):
-    query_words = tokenize(query)
-    results = []
-
-    for index, slide in enumerate(slides):
-        title_words = tokenize(
-            slide.get("slide_title", "") + " " + slide.get("presentation_title", "")
-        )
-        content_words = tokenize(
-            slide.get("search_text", "") + " " + slide.get("presentation_title", "")
-        )
-
-        score = 3 * len(query_words & title_words) + len(query_words & content_words)
-
-        if score > 0:
-            results.append((index, score))
-
-    results.sort(key=lambda item: item[1], reverse=True)
-    return results
-
-
-# ---------- BM25 search ----------
+# ---------------------------------------------------------
+# BM25 SEARCH
+# ---------------------------------------------------------
 
 def bm25_search(query):
-    scores = bm25.get_scores(tokenize_text(query))
+    """Return slides ranked by BM25 relevance."""
+
+    query_tokens = tokenize_text(query)
+
+    if not query_tokens:
+        return []
+
+    scores = bm25.get_scores(query_tokens)
 
     results = [
         (index, float(score))
@@ -122,68 +111,179 @@ def bm25_search(query):
         if score > 0
     ]
 
-    results.sort(key=lambda item: item[1], reverse=True)
+    results.sort(
+        key=lambda item: item[1],
+        reverse=True
+    )
+
     return results
 
 
-# ---------- Semantic search (cosine similarity) ----------
+# ---------------------------------------------------------
+# MINILM SEMANTIC SEARCH
+# ---------------------------------------------------------
 
 def semantic_search(query):
-    if model is None:
+    """Return slides ranked by MiniLM cosine similarity."""
+
+    if not query.strip():
         return []
 
-    query_vector = model.encode(query, normalize_embeddings=True)
+    query_vector = model.encode(
+        query,
+        normalize_embeddings=True
+    )
 
-    # Normalized vectors -> dot product equals cosine similarity
+    query_vector = np.asarray(query_vector)
+
+    # Stored embeddings and query vector are normalized.
+    # Therefore, dot product equals cosine similarity.
     scores = embeddings @ query_vector
+
     ranked_indices = np.argsort(scores)[::-1]
 
-    return [(int(index), float(scores[index])) for index in ranked_indices]
-
-
-# ---------- Hybrid search using RRF ----------
-
-def hybrid_search(query, top_k=TOP_K):
-    hybrid_scores = {}
-
-    rankings = [
-        (keyword_search(query), KEYWORD_WEIGHT),
-        (bm25_search(query), BM25_WEIGHT),
-        (semantic_search(query), SEMANTIC_WEIGHT),
+    return [
+        (int(index), float(scores[index]))
+        for index in ranked_indices
     ]
 
-    for results, weight in rankings:
+
+# ---------------------------------------------------------
+# RECIPROCAL RANK FUSION
+# ---------------------------------------------------------
+
+def reciprocal_rank_fusion(retrieval_methods):
+    """
+    Combine ranked results using Reciprocal Rank Fusion.
+
+    RRF score:
+        weight / (RRF_K + rank)
+
+    Raw BM25 and cosine similarity scores are not added.
+    Only ranking positions are used.
+    """
+
+    combined_scores = {}
+
+    for weight, results in retrieval_methods:
+
         for rank, (index, _) in enumerate(results, start=1):
-            hybrid_scores[index] = hybrid_scores.get(index, 0) + weight / (RRF_K + rank)
 
-    ranked = sorted(hybrid_scores.items(), key=lambda item: item[1], reverse=True)
-    return ranked[:top_k]
+            rrf_score = weight / (RRF_K + rank)
+
+            combined_scores[index] = (
+                combined_scores.get(index, 0.0)
+                + rrf_score
+            )
+
+    ranked_results = sorted(
+        combined_scores.items(),
+        key=lambda item: item[1],
+        reverse=True
+    )
+
+    return ranked_results
 
 
-# ---------- Interactive mode ----------
+# ---------------------------------------------------------
+# SELECTED HYBRID SEARCH: BM25 + MINILM
+# ---------------------------------------------------------
 
-def display_results(results, score_label):
+def hybrid_search(query, top_k=DEFAULT_TOP_K):
+    """
+    Selected retrieval method:
+        BM25 + MiniLM + RRF
+
+    Weights:
+        BM25     = 1
+        MiniLM   = 1
+        RRF_K    = 60
+
+    Returns:
+        [(slide_index, rrf_score), ...]
+    """
+
+    if not isinstance(query, str) or not query.strip():
+        return []
+
+    if not isinstance(top_k, int) or top_k < 1:
+        raise ValueError("top_k must be a positive integer.")
+
+    # Stage 1: Retrieve using BM25.
+    bm25_results = bm25_search(query)
+
+    # Stage 2: Retrieve using MiniLM.
+    semantic_results = semantic_search(query)
+
+    # Stage 3: Combine the rankings using RRF.
+    fused_results = reciprocal_rank_fusion([
+        (BM25_WEIGHT, bm25_results),
+        (SEMANTIC_WEIGHT, semantic_results),
+    ])
+
+    return fused_results[:top_k]
+
+
+# ---------------------------------------------------------
+# RETRIEVAL CONFIGURATION INFORMATION
+# ---------------------------------------------------------
+
+def get_retrieval_info():
+    """Return the configuration of the selected retrieval method."""
+
+    return {
+        "method": "BM25 + MiniLM + Reciprocal Rank Fusion",
+        "bm25_weight": BM25_WEIGHT,
+        "semantic_weight": SEMANTIC_WEIGHT,
+        "rrf_k": RRF_K,
+        "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+        "number_of_slides": len(slides),
+        "embedding_shape": list(embeddings.shape),
+    }
+
+
+# ---------------------------------------------------------
+# INTERACTIVE TESTING
+# ---------------------------------------------------------
+
+def display_results(results):
+
     for rank, (index, score) in enumerate(results, start=1):
+
         slide = slides[index]
-        print(f"\nRank {rank} | {score_label}: {score:.4f}")
-        print(f"Presentation: {slide.get('presentation_title', 'Unknown')[:80]}")
-        print(f"Title: {slide.get('slide_title', '')}")
-        print(f"Source: {slide.get('source_file', '')} (slide {slide.get('slide_number', '')})")
-        print(f"Content: {slide.get('search_text', '')[:350]}")
+
+        print("\n" + "=" * 75)
+        print(f"Rank: {rank}")
+        print(f"RRF Score: {score:.6f}")
+        print("Presentation:", slide.get("presentation_title", ""))
+        print("Source:", slide.get("source_file", ""))
+        print("Slide number:", slide.get("slide_number", ""))
+        print("Slide title:", slide.get("slide_title", ""))
+        print("Content:", slide.get("search_text", "")[:400])
 
 
 def main():
-    print("Hybrid search ready. Type 'exit' to stop.")
+
+    print("\nBM25 + MINILM HYBRID SEARCH")
+    print("Method: Reciprocal Rank Fusion")
+    print(f"BM25 weight: {BM25_WEIGHT}")
+    print(f"MiniLM weight: {SEMANTIC_WEIGHT}")
+    print(f"RRF K: {RRF_K}")
+    print("\nType 'exit' to stop.")
 
     while True:
-        query = input("\nSearch topic: ").strip()
 
-        if query.lower() == "exit":
+        query = input("\nEnter your query: ").strip()
+
+        if query.lower() in {"exit", "quit"}:
             break
+
         if not query:
             continue
 
-        display_results(hybrid_search(query), "Hybrid score")
+        results = hybrid_search(query, top_k=DEFAULT_TOP_K)
+
+        display_results(results)
 
 
 if __name__ == "__main__":

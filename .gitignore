@@ -1,26 +1,49 @@
 
-# Secrets
+# ==============================
+# Secrets and environment files
+# ==============================
 .env
 .env.*
 !.env.example
 
+# ==============================
 # Python environments and cache
+# ==============================
 .venv/
 .venv-*/
 venv/
 __pycache__/
 *.py[cod]
+*.pyo
 
+# ==============================
 # Generated data and embeddings
+# ==============================
 output/
 data/
 *.npy
 *.onnx
 
-# Source PowerPoint files
+# ==============================
+# Uploaded source PowerPoints
+# ==============================
 input_ppts/
+*.pptx
 
+# ==============================
+# Temporary Streamlit workspaces
+# ==============================
+presentation_request_*/
+
+# ==============================
+# Generated and temporary files
+# ==============================
+*.tmp
+*.log
+
+# ==============================
 # Editor and OS files
+# ==============================
 .vscode/
 .idea/
 .DS_Store
