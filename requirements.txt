@@ -1,12 +1,25 @@
-# No PyTorch needed - MiniLM runs on onnxruntime.
-#   pip install -r requirements.txt
 
+# MiniLM runs locally using ONNX Runtime. PyTorch is not required.
+
+# PowerPoint processing
 python-pptx>=1.0.2
+Pillow>=10.0
+
+# Numerical operations
 numpy>=1.26
+
+# Retrieval
 rank-bm25>=0.2.2
+
+# MiniLM ONNX inference
 onnxruntime>=1.18
 tokenizers>=0.19
 huggingface-hub>=0.23
 tqdm>=4.66
+
+# Gemini API
 google-genai>=1.40
 python-dotenv>=1.0
+
+# Web application
+streamlit>=1.40

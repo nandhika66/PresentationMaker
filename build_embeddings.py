@@ -10,7 +10,6 @@ import numpy as np
 from config import EMBEDDING_DIM, EMBEDDING_MODEL, EMBEDDINGS_FILE, RECORDS_FILE
 from embedder import MiniLMEmbedder
 
-
 def build_text(slide):
     """Create exactly ONE text per slide."""
     return (
