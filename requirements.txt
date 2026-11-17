@@ -23,3 +23,6 @@ python-dotenv>=1.0
 
 # Web application
 streamlit>=1.40
+
+fastapi
+uvicorn[standard]
