@@ -1,58 +1,68 @@
 
-# gemini_backend/main.py
-
 import os
+import secrets
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel, Field
 from google import genai
 
-# Locate the main PresentationMaker project folder
 BASE_DIR = Path(__file__).resolve().parent.parent
-
-# Load the existing project-level .env file
 load_dotenv(BASE_DIR / ".env")
 
-# Read Gemini configuration
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv(
-    "GEMINI_MODEL",
-    "gemini-3.1-flash-lite"
-)
+BACKEND_ACCESS_TOKEN = os.getenv("BACKEND_ACCESS_TOKEN")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
 
-# Create the FastAPI application
 app = FastAPI(
-    title="PresentationMaker Gemini Backend",
-    description="Backend service for AI-powered slide content generation",
-    version="1.0.0"
+    title="PresentationMaker Backend",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None
 )
 
-
-# Request format
 class GenerateRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=20000)
 
 
-# Health-check endpoint
+def verify_access_token(authorization: str | None):
+    if not BACKEND_ACCESS_TOKEN:
+        raise HTTPException(
+            status_code=503,
+            detail="Backend access token is not configured."
+        )
+
+    expected = f"Bearer {BACKEND_ACCESS_TOKEN}"
+
+    if not authorization or not secrets.compare_digest(
+        authorization, expected
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing access token."
+        )
+
+
 @app.get("/health")
 def health_check():
-
     return {
         "status": "online",
         "gemini_configured": bool(GEMINI_API_KEY)
     }
 
 
-# Gemini generation endpoint
 @app.post("/generate")
-def generate_content(request: GenerateRequest):
+def generate_content(
+    request: GenerateRequest,
+    authorization: str | None = Header(default=None)
+):
+    verify_access_token(authorization)
 
     if not GEMINI_API_KEY:
         raise HTTPException(
             status_code=503,
-            detail="Gemini API key is not configured on the server."
+            detail="Gemini API key is not configured."
         )
 
     try:
@@ -79,7 +89,6 @@ def generate_content(request: GenerateRequest):
 
     except Exception as error:
         print(f"Gemini generation error: {error}")
-
         raise HTTPException(
             status_code=502,
             detail="Gemini generation failed. Check server logs."
